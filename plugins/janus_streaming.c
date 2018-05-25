@@ -3407,6 +3407,7 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 					JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d): %"SCNu32"\n",
 						session, sl, session->substream_target, bitrate);
 					session->substream_target = sl;
+					session->change_latest = now;
 				}
 			}
 			janus_refcount_decrease(&session->ref);
@@ -3421,6 +3422,7 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 				JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d)\n",
 					session, sl, session->substream_target);
 				session->substream_target = sl;
+				session->change_latest = now;
 			}
 		}	
 	}
