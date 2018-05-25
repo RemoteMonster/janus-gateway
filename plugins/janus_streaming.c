@@ -1061,6 +1061,7 @@ typedef struct janus_streaming_session {
 	uint32_t tmprates[3];	/* Same as above, but temporary value we use for calculations */
 	gboolean autochange;
 	gint64 rate_latest;		/* Time we latest updated the rates */
+	gint64 change_latest;
 	janus_refcount ref;
 } janus_streaming_session;
 static GHashTable *sessions;
@@ -3368,6 +3369,9 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 	}
 
 	janus_streaming_rtp_source *source = session->mountpoint->source;
+
+	gint64 now = janus_get_monotonic_time();
+	if (now - session->change_latest < 3*G_USEC_PER_SEC) return;
 
 	/* We might interested in the available bandwidth that the user advertizes */
 	uint64_t bitrate = janus_rtcp_get_remb(buf, len);
