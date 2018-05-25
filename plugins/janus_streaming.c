@@ -1057,9 +1057,8 @@ typedef struct janus_streaming_session {
 	gboolean stopping;
 	volatile gint hangingup;
 	volatile gint destroyed;
-	uint32_t tlrates[3][3];	/* Apparent bitrate of incoming video streams for each temporal layer (useful for automatic switches) */
 	uint32_t slrates[3];	/* Apparent bitrate of incoming video streams for each spatial layer (useful for automatic switches) */
-	uint32_t tmprates[3][3];/* Same as above, but temporary value we use for calculations */
+	uint32_t tmprates[3];	/* Same as above, but temporary value we use for calculations */
 	gboolean autochange;
 	gint64 rate_latest;		/* Time we latest updated the rates */
 	janus_refcount ref;
@@ -3367,80 +3366,49 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 	if(g_atomic_int_get(&session->destroyed)) {
 		return;
 	}
-	if(g_atomic_int_add(&session->hangingup, 1)) {
-		return;
-	}
 
 	janus_streaming_rtp_source *source = session->mountpoint->source;
 
 	/* We might interested in the available bandwidth that the user advertizes */
-	uint64_t bw = janus_rtcp_get_remb(buf, len);
-	if(bw > 0) {
-		JANUS_LOG(LOG_HUGE, "REMB for this PeerConnection: %"SCNu64"\n", bw);
-
-		uint32_t bitrate = janus_rtcp_get_remb(buf, len);
-		if(bitrate > 0) {
-			/* FIXME We got a REMB from this subscriber, should we do something about it? */
-			if(session->autochange && source->simulcast) {
-				/* Either simulcast or SVC may be involved: check the available layers
-				 * and the related bitrates, and find the best match to this REMB value */
-				janus_refcount_increase(&session->ref);
-				JANUS_LOG(LOG_HUGE, "[%p] Subscriber's bitrate: %"SCNu32"\n", session, bitrate);
-				/* Check substreams and/or spatial and temporal layers */
-				int sl = 2, tl = 2, done = 0;
-				for(sl=2; sl >=0; sl--) {
-					if(!session->slrates[sl]) {
-						JANUS_LOG(LOG_HUGE, "[%p]  -- Skipping %s #%d (not available)\n",
-							session, (source->simulcast ? "substream" : "spatial layer"), sl);
-						continue;
-					}
-					if(session->slrates[sl] <= bitrate) {
-						JANUS_LOG(LOG_HUGE, "[%p]  -- %s #%d: %"SCNu32" < %"SCNu32"\n",
-							session, (source->simulcast ? "substream" : "spatial layer"), sl, session->slrates[sl], bitrate);
-						break;
-					} else {
-						JANUS_LOG(LOG_HUGE, "[%p]  -- %s #%d: %"SCNu32" > %"SCNu32"\n",
-							session, (source->simulcast ? "substream" : "spatial layer"), sl, session->slrates[sl], bitrate);
-					}
-					for(tl=2; tl >=0; tl--) {
-						if(sl > 0 && tl == 0) {
-							/* We don't drop framerate too much for high quality streams, but
-								* only for substream #0 when we really have to (very low REMB) */
-							break;
-						}
-						if(!session->tlrates[sl]) {
-							JANUS_LOG(LOG_HUGE, "[%p]  -- -- Skipping %s #%d, temporal layer %d (not available)\n",
-								session, (source->simulcast ? "substream" : "spatial layer"), sl, tl);
-							continue;
-						}
-						if(session->tlrates[sl][tl] <= bitrate) {
-							JANUS_LOG(LOG_HUGE, "[%p]  -- -- %s #%d, temporal layer %d: %"SCNu32" < %"SCNu32"\n",
-								session, (source->simulcast ? "substream" : "spatial layer"), sl, tl, session->tlrates[sl][tl], bitrate);
-							done = 1;
-							break;
-						} else {
-							JANUS_LOG(LOG_HUGE, "[%p]  -- -- %s #%d, temporal layer %d: %"SCNu32" > %"SCNu32"\n",
-								session, (source->simulcast ? "substream" : "spatial layer"), sl, tl, session->tlrates[sl][tl], bitrate);
-						}
-					}
-					if(done)
-						break;
+	uint64_t bitrate = janus_rtcp_get_remb(buf, len);
+	if(bitrate > 0) {
+		/* FIXME We got a REMB from this subscriber, should we do something about it? */
+		if(session->autochange && source->simulcast) {
+			/* Either simulcast or SVC may be involved: check the available layers
+				* and the related bitrates, and find the best match to this REMB value */
+			janus_refcount_increase(&session->ref);
+			JANUS_LOG(LOG_HUGE, "[%p] Subscriber's bitrate: %"SCNu32"\n", session, bitrate);
+			/* Check substreams and/or spatial and temporal layers */
+			int sl = 2, done = 0;
+			for(sl=2; sl >=0; sl--) {
+				if(!session->slrates[sl]) {
+					JANUS_LOG(LOG_HUGE, "[%p]  -- Skipping %s #%d (not available)\n",
+						session, (source->simulcast ? "substream" : "spatial layer"), sl);
+					continue;
 				}
-				if(sl < 0)
-					sl = 0;
-				if(tl < 0)
-					tl = 0;
-				if(source->simulcast) {
-					if(sl != session->substream_target || tl != session->templayer_target) {
-						JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d), temporal layer %d (was #%d): %"SCNu32" < %"SCNu32"\n",
-							session, sl, session->substream_target, tl, session->templayer_target, session->tlrates[sl][tl], bitrate);
-						session->substream_target = sl;
-						session->templayer_target = tl;
-					}
+				if(session->slrates[sl] <= bitrate) {
+					JANUS_LOG(LOG_HUGE, "[%p]  -- %s #%d: %"SCNu32" < %"SCNu32"\n",
+						session, (source->simulcast ? "substream" : "spatial layer"), sl, session->slrates[sl], bitrate);
+					done = 1;
+					break;
+				} else {
+					JANUS_LOG(LOG_HUGE, "[%p]  -- %s #%d: %"SCNu32" > %"SCNu32"\n",
+						session, (source->simulcast ? "substream" : "spatial layer"), sl, session->slrates[sl], bitrate);
 				}
-				janus_refcount_decrease(&session->ref);
+				if(done)
+					break;
 			}
-		}
+			if(sl < 0)
+				sl = 0;
+			if(source->simulcast) {
+				if(sl != session->substream_target) {
+					JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d): %"SCNu32"\n",
+						session, sl, session->substream_target, bitrate);
+					session->substream_target = sl;
+				}
+			}
+			janus_refcount_decrease(&session->ref);
+		}		
 	}
 }
 
@@ -5913,24 +5881,11 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 				if(now-session->rate_latest >= G_USEC_PER_SEC) {
 					/* Update the latest valid bitrates count, and reset the temporary counters */
 					if(!source->simulcast) {
-						/* Easy enough: single video stream, no layers */
-						session->slrates[0] = session->tlrates[0][0];
-						session->tmprates[0][0] = 0;
+
 					} else {
-						int i=0, j=0;
+						int i=0;
 						for(i=0; i<3; i++) {
-							session->slrates[i] = 0;
-							for(j=0; j<3; j++) {
-								session->tlrates[i][j] = session->tmprates[i][j];
-								/* Each temporal layer includes the layer below, so add that */
-								if(j > 0)
-									session->tlrates[i][j] += session->tlrates[i][j-1];
-								if(session->slrates[i] < session->tlrates[i][j])
-									session->slrates[i] = session->tlrates[i][j];
-								session->tmprates[i][j] = 0;
-								JANUS_LOG(LOG_HUGE, "[%s] Spatial layer #%d, temporal layer #%d: %"SCNu32"\n",
-									session, i, j, session->tlrates[i][j]);
-							}
+							session->slrates[i] = session->tmprates[i];
 							JANUS_LOG(LOG_HUGE, "[%s] Spatial layer #%d: %"SCNu32"\n",
 								session, i, session->slrates[i]);
 						}
@@ -5939,7 +5894,7 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 				}
 			}
 			uint32_t plen = packet->length;
-			session->tmprates[session->substream][session->templayer] += (plen << 3);
+			session->tmprates[packet->substream] += (plen << 3);
 
 
 			if(packet->simulcast) {
