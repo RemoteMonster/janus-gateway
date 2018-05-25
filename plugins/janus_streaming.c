@@ -3379,7 +3379,7 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 			janus_refcount_increase(&session->ref);
 			JANUS_LOG(LOG_HUGE, "[%p] Subscriber's bitrate: %"SCNu32"\n", session, bitrate);
 			/* Check substreams and/or spatial and temporal layers */
-			int sl = 0, done = 0;
+			int sl = 0;
 			for(sl=0; sl<=2; sl++) {
 				if(!session->slrates[sl]) {
 					JANUS_LOG(LOG_HUGE, "[%p]  -- Skipping %s #%d (not available)\n",
@@ -3393,14 +3393,11 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 				} else {
 					JANUS_LOG(LOG_HUGE, "[%p]  -- %s #%d: %"SCNu32" > %"SCNu32"\n",
 						session, (source->simulcast ? "substream" : "spatial layer"), sl, session->slrates[sl], bitrate);
-					done = 1;
 					break;
 				}
-				if(done)
-					break;
 			}
-			if(sl < 0)
-				sl = 0;
+			if(sl > 2)
+				sl = 2;
 			if(source->simulcast) {
 				if(sl != session->substream_target) {
 					JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d): %"SCNu32"\n",
@@ -3710,6 +3707,10 @@ done:
 				g_strlcat(sdptemp, buffer, 2048);
 				g_snprintf(buffer, 512,
 					"a=rtcp-fb:%d goog-remb\r\n",
+					mp->codecs.video_pt);
+				g_strlcat(sdptemp, buffer, 2048);
+				g_snprintf(buffer, 512,
+					"a=rtcp-fb:%d ccm fir\r\n",
 					mp->codecs.video_pt);
 				g_strlcat(sdptemp, buffer, 2048);
 				g_strlcat(sdptemp, "a=sendonly\r\n", 2048);
