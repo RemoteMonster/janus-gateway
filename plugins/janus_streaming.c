@@ -3408,6 +3408,18 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 			janus_refcount_decrease(&session->ref);
 		}		
 	}
+	gboolean hasPli = janus_rtcp_has_pli(buf, len);
+	if (hasPli == TRUE) {
+		if(source->simulcast) {
+			int sl = session->substream_target - 1;
+			if (sl < 0) sl = 0;
+			if (sl != session->substream_target) {
+				JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d)\n",
+					session, sl, session->substream_target);
+				session->substream_target = sl;
+			}
+		}	
+	}
 }
 
 void janus_streaming_hangup_media(janus_plugin_session *handle) {
@@ -3710,7 +3722,7 @@ done:
 					mp->codecs.video_pt);
 				g_strlcat(sdptemp, buffer, 2048);
 				g_snprintf(buffer, 512,
-					"a=rtcp-fb:%d ccm fir\r\n",
+					"a=rtcp-fb:%d nack pli\r\n",
 					mp->codecs.video_pt);
 				g_strlcat(sdptemp, buffer, 2048);
 				g_strlcat(sdptemp, "a=sendonly\r\n", 2048);
