@@ -688,6 +688,7 @@ struct janus_plugin_result *janus_streaming_handle_message(janus_plugin_session 
 void janus_streaming_setup_media(janus_plugin_session *handle);
 void janus_streaming_incoming_rtp(janus_plugin_session *handle, int video, char *buf, int len);
 void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char *buf, int len);
+void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int video);
 void janus_streaming_hangup_media(janus_plugin_session *handle);
 void janus_streaming_destroy_session(janus_plugin_session *handle, int *error);
 json_t *janus_streaming_query_session(janus_plugin_session *handle);
@@ -712,6 +713,7 @@ static janus_plugin janus_streaming_plugin =
 		.setup_media = janus_streaming_setup_media,
 		.incoming_rtp = janus_streaming_incoming_rtp,
 		.incoming_rtcp = janus_streaming_incoming_rtcp,
+		.slow_link = janus_streaming_slow_link,
 		.hangup_media = janus_streaming_hangup_media,
 		.destroy_session = janus_streaming_destroy_session,
 		.query_session = janus_streaming_query_session,
@@ -3413,8 +3415,10 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 			janus_refcount_decrease(&session->ref);
 		}		
 	}
+	/*
 	gboolean hasPli = janus_rtcp_has_pli(buf, len);
 	if (hasPli == TRUE) {
+		janus_refcount_increase(&session->ref);
 		if(source->simulcast) {
 			int sl = session->substream_target - 1;
 			if (sl < 0) sl = 0;
@@ -3425,7 +3429,37 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 				session->change_latest = now;
 			}
 		}	
+		janus_refcount_decrease(&session->ref);
 	}
+	*/
+}
+
+void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int video) {
+	if(handle == NULL || g_atomic_int_get(&handle->stopped) || g_atomic_int_get(&stopping) || !g_atomic_int_get(&initialized))
+		return;
+
+	janus_streaming_session *session = janus_streaming_lookup_session(handle);
+	if(!session) {
+		JANUS_LOG(LOG_ERR, "No session associated with this handle...\n");
+		return;
+	}
+	if(g_atomic_int_get(&session->destroyed)) {
+		return;
+	}
+	
+	janus_streaming_rtp_source *source = session->mountpoint->source;
+
+	janus_refcount_increase(&session->ref);
+	if(source->simulcast) {
+		int sl = session->substream_target - 1;
+		if (sl < 0) sl = 0;
+		if (sl != session->substream_target) {
+			JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d)\n",
+				session, sl, session->substream_target);
+			session->substream_target = sl;
+		}
+	}	
+	janus_refcount_decrease(&session->ref);
 }
 
 void janus_streaming_hangup_media(janus_plugin_session *handle) {
