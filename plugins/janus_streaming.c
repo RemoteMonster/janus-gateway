@@ -3373,7 +3373,7 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 	janus_streaming_rtp_source *source = session->mountpoint->source;
 
 	gint64 now = janus_get_monotonic_time();
-	if (now - session->change_latest < 3*G_USEC_PER_SEC) return;
+	if (now - session->change_latest < 30*G_USEC_PER_SEC) return;
 
 	/* We might interested in the available bandwidth that the user advertizes */
 	uint64_t bitrate = janus_rtcp_get_remb(buf, len);
@@ -3385,25 +3385,29 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 			janus_refcount_increase(&session->ref);
 			JANUS_LOG(LOG_HUGE, "[%p] Subscriber's bitrate: %"SCNu32"\n", session, bitrate);
 			/* Check substreams and/or spatial and temporal layers */
-			int sl = 0;
-			for(sl=0; sl<=2; sl++) {
+			int sl = 2;
+			for(sl=2; sl>=0; sl--) {
 				if(!session->slrates[sl]) {
 					JANUS_LOG(LOG_HUGE, "[%p]  -- Skipping %s #%d (not available)\n",
 						session, (source->simulcast ? "substream" : "spatial layer"), sl);
 					continue;
 				}
-				if(session->slrates[sl] <= bitrate) {
+				int target = session->slrates[sl];
+				if (sl == 2) target = -1 * (session->slrates[sl]/10);
+				if (sl == 1) target = session->slrates[0] + session->slrates[0]/2;
+
+				if(target <= bitrate) {
 					JANUS_LOG(LOG_HUGE, "[%p]  -- %s #%d: %"SCNu32" < %"SCNu32"\n",
 						session, (source->simulcast ? "substream" : "spatial layer"), sl, session->slrates[sl], bitrate);
-					continue;
+					break;
 				} else {
 					JANUS_LOG(LOG_HUGE, "[%p]  -- %s #%d: %"SCNu32" > %"SCNu32"\n",
 						session, (source->simulcast ? "substream" : "spatial layer"), sl, session->slrates[sl], bitrate);
-					break;
+					continue;
 				}
 			}
-			if(sl > 2)
-				sl = 2;
+			if(sl < -1)
+				sl = 0;
 			if(source->simulcast) {
 				if(sl != session->substream_target) {
 					JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d): %"SCNu32"\n",
@@ -3457,6 +3461,7 @@ void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int vid
 			JANUS_LOG(LOG_WARN, "[%p] Autochanging to substream #%d (was #%d)\n",
 				session, sl, session->substream_target);
 			session->substream_target = sl;
+			session->change_latest = janus_get_monotonic_time();
 		}
 	}	
 	janus_refcount_decrease(&session->ref);
@@ -5937,9 +5942,8 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 					if(!source->simulcast) {
 
 					} else {
-						int i=0;
-						for(i=0; i<3; i++) {
-							session->slrates[i] = session->tmprates[i];
+						for(int i=0; i<3; i++) {
+							session->slrates[i] = (7*session->slrates[i] + 1*session->tmprates[i]) / 8;
 							session->tmprates[i] = 0;
 							JANUS_LOG(LOG_HUGE, "[%s] Spatial layer #%d: %"SCNu32"\n",
 								session, i, session->slrates[i]);
