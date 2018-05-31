@@ -1068,6 +1068,7 @@ typedef struct janus_streaming_session {
 	gint64 downrate_latest;
 	gint64 nack_latest;
 	uint32_t nacks_count;
+	gint64 bwe_latest;
 	janus_refcount ref;
 } janus_streaming_session;
 static GHashTable *sessions;
@@ -3438,6 +3439,7 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 					}
 				}
 			}
+			session->bwe_latest = bitrate;
 		}		
 	}
 	/*
@@ -3461,7 +3463,7 @@ void janus_streaming_incoming_rtcp(janus_plugin_session *handle, int video, char
 	janus_refcount_decrease(&session->ref);
 }
 
-void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int video, int nacks) {
+void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int video, int ) {
 	if(handle == NULL || g_atomic_int_get(&handle->stopped) || g_atomic_int_get(&stopping) || !g_atomic_int_get(&initialized))
 		return;
 
@@ -3480,18 +3482,16 @@ void janus_streaming_slow_link(janus_plugin_session *handle, int uplink, int vid
 
 	janus_refcount_increase(&session->ref);
 
-	if(session->autochange && source->simulcast) {
-
-		if (now - session->nack_latest > 5*G_USEC_PER_SEC) {
-			goto done;
-		}
-			
+	if(session->autochange && source->simulcast) {			
 		if (now - session->downrate_latest < 5*G_USEC_PER_SEC) {
 			goto done;
 		}
 
 		if (now - session->uprate_latest <= 5*G_USEC_PER_SEC) {
 			session->conserve_time += session->conserve_time/2;
+		} else {
+			if (nacks <= 16) goto done;
+			if (session->bwe_latest > session->slrates[session->substream]) goto done;
 		}
 
 		int sl = session->substream - 1;
