@@ -780,7 +780,7 @@ int janus_textroom_init(janus_callbacks *callback, const char *config_path) {
 	rooms = g_hash_table_new_full(g_int64_hash, g_int64_equal, (GDestroyNotify)g_free, (GDestroyNotify)janus_textroom_room_destroy);
 	sessions = g_hash_table_new_full(NULL, NULL, NULL, (GDestroyNotify)janus_textroom_session_destroy);
 	messages = g_async_queue_new_full((GDestroyNotify) janus_textroom_message_free);
-	/* This is the callback we'll need to invoke to contact the gateway */
+	/* This is the callback we'll need to invoke to contact the Janus core */
 	gateway = callback;
 
 	/* Parse configuration to populate the rooms list */
@@ -1904,7 +1904,7 @@ janus_plugin_result *janus_textroom_handle_incoming_request(janus_plugin_session
 			JANUS_LOG(LOG_WARN, "HTTP backend specified, but libcurl support was not built in...\n");
 #endif
 		}
-		textroom->participants = g_hash_table_new(g_str_hash, g_str_equal);
+		textroom->participants = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, (GDestroyNotify)janus_textroom_participant_dereference);
 		textroom->allowed = g_hash_table_new_full(g_str_hash, g_str_equal, (GDestroyNotify)g_free, NULL);
 		if(allowed != NULL) {
 			/* Populate the "allowed" list as an ACL for people trying to join */
@@ -2400,7 +2400,7 @@ static void *janus_textroom_handler(void *data) {
 			json_t *jsep = json_pack("{ssss}", "type", "offer", "sdp", sdp);
 			if(sdp_update)
 				json_object_set_new(jsep, "restart", json_true());
-			/* How long will the gateway take to push the event? */
+			/* How long will the Janus core take to push the event? */
 			g_atomic_int_set(&session->hangingup, 0);
 			gint64 start = janus_get_monotonic_time();
 			int res = gateway->push_event(msg->handle, &janus_textroom_plugin, msg->transaction, event, jsep);

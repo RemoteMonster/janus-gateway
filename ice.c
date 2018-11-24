@@ -8,7 +8,7 @@
  * on. Incoming RTP and RTCP packets from peers are relayed to the associated
  * plugins by means of the incoming_rtp and incoming_rtcp callbacks. Packets
  * to be sent to peers are relayed by peers invoking the relay_rtp and
- * relay_rtcp gateway callbacks instead.
+ * relay_rtcp core callbacks instead.
  *
  * \ingroup protocols
  * \ref protocols
@@ -455,6 +455,8 @@ void janus_ice_relay_rtcp_internal(janus_ice_handle *handle, int video, char *bu
 static GHashTable *plugin_sessions;
 static janus_mutex plugin_sessions_mutex;
 gboolean janus_plugin_session_is_alive(janus_plugin_session *plugin_session) {
+	if(plugin_session == NULL)
+		return FALSE;
 	/* Make sure this plugin session is still alive */
 	janus_mutex_lock_nodebug(&plugin_sessions_mutex);
 	janus_plugin_session *result = g_hash_table_lookup(plugin_sessions, plugin_session);
@@ -463,6 +465,10 @@ gboolean janus_plugin_session_is_alive(janus_plugin_session *plugin_session) {
 		JANUS_LOG(LOG_ERR, "Invalid plugin session (%p)\n", plugin_session);
 	}
 	return (result != NULL);
+}
+static void janus_plugin_session_dereference(janus_plugin_session *plugin_session) {
+	if(plugin_session)
+		janus_refcount_decrease(&plugin_session->ref);
 }
 
 
@@ -697,7 +703,7 @@ void janus_ice_init(gboolean ice_lite, gboolean ice_tcp, gboolean full_trickle, 
 	}
 
 	/* We keep track of plugin sessions to avoid problems */
-	plugin_sessions = g_hash_table_new(NULL, NULL);
+	plugin_sessions = g_hash_table_new_full(NULL, NULL, NULL, (GDestroyNotify)janus_plugin_session_dereference);
 	janus_mutex_init(&plugin_sessions_mutex);
 
 #ifdef HAVE_LIBCURL
@@ -835,8 +841,8 @@ int janus_ice_set_stun_server(gchar *stun_server, uint16_t stun_port) {
 			const char *public_ip = janus_network_address_string_from_buffer(&addr_buf);
 			JANUS_LOG(LOG_INFO, "  >> Our public address is %s\n", public_ip);
 			janus_set_public_ip(public_ip);
-			close(fd);
 		}
+		close(fd);
 		return 0;
 	}
 	ret = stun_message_find_addr(&msg, STUN_ATTRIBUTE_MAPPED_ADDRESS, (struct sockaddr_storage *)address, &addrlen);
@@ -849,8 +855,8 @@ int janus_ice_set_stun_server(gchar *stun_server, uint16_t stun_port) {
 			const char *public_ip = janus_network_address_string_from_buffer(&addr_buf);
 			JANUS_LOG(LOG_INFO, "  >> Our public address is %s\n", public_ip);
 			janus_set_public_ip(public_ip);
-			close(fd);
 		}
+		close(fd);
 		return 0;
 	}
 	close(fd);
@@ -1000,13 +1006,12 @@ gint janus_ice_handle_attach_plugin(void *core_session, janus_ice_handle *handle
 	if(error) {
 		/* TODO Make error struct to pass verbose information */
 		g_free(session_handle);
-		janus_mutex_unlock(&session->mutex);
 		return error;
 	}
 	janus_refcount_init(&session_handle->ref, janus_ice_plugin_session_free);
 	/* Handle and plugin session reference each other */
 	janus_refcount_increase(&session_handle->ref);
-	//~ janus_refcount_increase(&handle->ref);
+	janus_refcount_increase(&handle->ref);
 	handle->app = plugin;
 	handle->app_handle = session_handle;
 	/* Add this plugin session to active sessions map */
@@ -1061,10 +1066,10 @@ gint janus_ice_handle_destroy(void *core_session, janus_ice_handle *handle) {
 	/* Actually detach handle... */
 	int error = 0;
 	if(g_atomic_int_compare_and_exchange(&handle->app_handle->stopped, 0, 1)) {
-		handle->app_handle->gateway_handle = NULL;
-		/* Notify the plugin that the session's over */
+		/* Notify the plugin that the session's over (the plugin will
+		 * remove the other reference to the plugin session handle) */
 		plugin_t->destroy_session(handle->app_handle, &error);
-		/* We only unref when actually freeing the ICE handle */
+		handle->app_handle = NULL;
 	}
 	/* Get rid of the handle now */
 	if(g_atomic_int_compare_and_exchange(&handle->dump_packets, 1, 0)) {
@@ -1099,8 +1104,6 @@ void janus_ice_free(const janus_refcount *handle_ref) {
 		janus_ice_clear_queued_packets(handle);
 		g_async_queue_unref(handle->queued_packets);
 	}
-	if(handle->app_handle != NULL)
-		janus_refcount_decrease(&handle->app_handle->ref);
 	janus_mutex_unlock(&handle->mutex);
 	janus_ice_webrtc_free(handle);
 	JANUS_LOG(LOG_INFO, "[%"SCNu64"] Handle and related resources freed; %p %p\n", handle->handle_id, handle, handle->session);
@@ -1116,6 +1119,11 @@ void janus_ice_free(const janus_refcount *handle_ref) {
 void janus_ice_plugin_session_free(const janus_refcount *app_handle_ref) {
 	janus_plugin_session *app_handle = janus_refcount_containerof(app_handle_ref, janus_plugin_session, ref);
 	/* This app handle can be destroyed, free all the resources */
+	if(app_handle->gateway_handle != NULL) {
+		janus_ice_handle *handle = (janus_ice_handle *)app_handle->gateway_handle;
+		app_handle->gateway_handle = NULL;
+		janus_refcount_decrease(&handle->ref);
+	}
 	g_free(app_handle);
 }
 
@@ -1159,7 +1167,6 @@ void janus_ice_webrtc_free(janus_ice_handle *handle) {
 	if(handle == NULL)
 		return;
 	janus_mutex_lock(&handle->mutex);
-	janus_flags_clear(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_READY);
 	if(handle->iceloop != NULL) {
 		g_main_loop_unref (handle->iceloop);
 		handle->iceloop = NULL;
@@ -1949,17 +1956,10 @@ static void janus_ice_cb_new_remote_candidate (NiceAgent *agent, NiceCandidate *
 #endif
 	}
 
-	/* Save for the summary, in case we need it */
-	component->remote_candidates = g_slist_append(component->remote_candidates, g_strdup(buffer));
-
-	/* Notify event handlers */
-	if(janus_events_is_enabled()) {
-		janus_session *session = (janus_session *)handle->session;
-		json_t *info = json_object();
-		json_object_set_new(info, "remote-candidate", json_string(buffer));
-		json_object_set_new(info, "stream_id", json_integer(stream_id));
-		json_object_set_new(info, "component_id", json_integer(component_id));
-		janus_events_notify_handlers(JANUS_EVENT_TYPE_WEBRTC, session->session_id, handle->handle_id, handle->opaque_id, info);
+	/* Now parse the candidate as if we received it from the Janus API */
+	int res = janus_sdp_parse_candidate(stream, buffer, 1);
+	if(res != 0) {
+		JANUS_LOG(LOG_ERR, "[%"SCNu64"] Failed to parse prflx candidate... (%d)\n", handle->handle_id, res);
 	}
 
 candidatedone:
@@ -2124,14 +2124,11 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 					/* The original sequence number is in the first two bytes of the payload */
 					int plen = 0;
 					char *payload = janus_rtp_payload(buf, buflen, &plen);
-					guint16 original_seq = 0;
-					memcpy(&original_seq, payload, 2);
-					original_seq = htons(original_seq);
 					/* Rewrite the header with the info from the original packet (payload type, SSRC, sequence number) */
 					header->type = stream->video_payload_type;
 					packet_ssrc = stream->video_ssrc_peer[vindex];
 					header->ssrc = htonl(packet_ssrc);
-					header->seq_number = htons(original_seq);
+					memcpy(&header->seq_number, payload, 2);
 					/* Finally, remove the original sequence number from the payload: rather than moving
 					 * the whole payload back two bytes, we shift the header forward (less bytes to move) */
 					buflen -= 2;
@@ -2139,6 +2136,34 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 					memmove(buf+2, buf, hsize);
 					buf += 2;
 					header = (janus_rtp_header *)buf;
+				}
+				/* Check if we need to handle transport wide cc */
+				if(stream->do_transport_wide_cc) {
+					guint16 transport_seq_num;
+					/* Get transport wide seq num */
+					if(janus_rtp_header_extension_parse_transport_wide_cc(buf, buflen, stream->transport_wide_cc_ext_id, &transport_seq_num)==0) {
+						/* Get current timestamp */
+						struct timeval now;
+						gettimeofday(&now,0);
+						/* Create <seq num, time> pair */
+						janus_rtcp_transport_wide_cc_stats *stats = g_malloc0(sizeof(janus_rtcp_transport_wide_cc_stats));
+						/* Check if we have a sequence wrap */
+						if(transport_seq_num<0x0FFF && (stream->transport_wide_cc_last_seq_num&0xFFFF)>0xF000) {
+							/* Increase cycles */
+							stream->transport_wide_cc_cycles++;
+						}
+						/* Get extended value */
+						guint32 transport_ext_seq_num = stream->transport_wide_cc_cycles<<16 | transport_seq_num;
+						/* Store last received transport seq num */
+						stream->transport_wide_cc_last_seq_num = transport_seq_num;
+						/* Set stats values */
+						stats->transport_seq_num = transport_ext_seq_num;
+						stats->timestamp = (((guint64)now.tv_sec)*1E6+now.tv_usec);
+						/* Lock and append to received list */
+						janus_mutex_lock(&stream->mutex);
+						stream->transport_wide_received_seq_nums = g_slist_prepend(stream->transport_wide_received_seq_nums, stats);
+						janus_mutex_unlock(&stream->mutex);
+					}
 				}
 				if(video && stream->rtx_nacked[vindex] != NULL) {
 					/* Check if this packet is a duplicate: can happen with RFC4588 */
@@ -2199,37 +2224,9 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 							stream->video_is_keyframe = &janus_h264_is_keyframe;
 					}
 				}
-				/* Check if we need to handle transport wide cc */
-				if(stream->do_transport_wide_cc) {
-					guint16 transport_seq_num;
-					/* Get transport wide seq num */
-					if(janus_rtp_header_extension_parse_transport_wide_cc(buf, buflen, stream->transport_wide_cc_ext_id, &transport_seq_num)==0) {
-						/* Get current timestamp */
-						struct timeval now;
-						gettimeofday(&now,0);
-						/* Create <seq num, time> pair */
-						janus_rtcp_transport_wide_cc_stats *stats = g_malloc0(sizeof(janus_rtcp_transport_wide_cc_stats));
-						/* Check if we have a sequence wrap */
-						if(transport_seq_num<0x0FFF && (stream->transport_wide_cc_last_seq_num&0xFFFF)>0xF000) {
-							/* Increase cycles */
-							stream->transport_wide_cc_cycles++;
-						}
-						/* Get extended value */
-						guint32 transport_ext_seq_num = stream->transport_wide_cc_cycles<<16 | transport_seq_num;
-						/* Store last received transport seq num */
-						stream->transport_wide_cc_last_seq_num = transport_seq_num;
-						/* Set stats values */
-						stats->transport_seq_num = transport_ext_seq_num;
-						stats->timestamp = (((guint64)now.tv_sec)*1E6+now.tv_usec);
-						/* Lock & append to received list*/
-						janus_mutex_lock(&stream->mutex);
-						stream->transport_wide_received_seq_nums = g_slist_prepend(stream->transport_wide_received_seq_nums, stats);
-						janus_mutex_unlock(&stream->mutex);
-					}
-				}
 				/* Pass the data to the responsible plugin */
 				janus_plugin *plugin = (janus_plugin *)handle->app;
-				if(plugin && plugin->incoming_rtp &&
+				if(plugin && plugin->incoming_rtp && handle->app_handle &&
 						!g_atomic_int_get(&handle->app_handle->stopped) &&
 						!g_atomic_int_get(&handle->destroyed))
 					plugin->incoming_rtp(handle->app_handle, video, buf, buflen);
@@ -2279,11 +2276,9 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 					}
 				}
 
-				/* Update the RTCP context as well (but not if it's a retransmission) */
-				if(!rtx) {
-					rtcp_context *rtcp_ctx = video ? stream->video_rtcp_ctx[vindex] : stream->audio_rtcp_ctx;
-					janus_rtcp_process_incoming_rtp(rtcp_ctx, buf, buflen);
-				}
+				/* Update the RTCP context as well */
+				rtcp_context *rtcp_ctx = video ? stream->video_rtcp_ctx[vindex] : stream->audio_rtcp_ctx;
+				janus_rtcp_process_incoming_rtp(rtcp_ctx, buf, buflen);
 
 				/* Keep track of RTP sequence numbers, in case we need to NACK them */
 				/* 	Note: unsigned int overflow/underflow wraps (defined behavior) */
@@ -2350,7 +2345,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 						} else if(cur_seq->state == SEQ_MISSING && now - cur_seq->ts > SEQ_MISSING_WAIT) {
 							JANUS_LOG(LOG_HUGE, "[%"SCNu64"] Missed sequence number %"SCNu16" (%s stream #%d), sending 1st NACK\n",
 								handle->handle_id, cur_seq->seq, video ? "video" : "audio", vindex);
-							nacks = g_slist_append(nacks, GUINT_TO_POINTER(cur_seq->seq));
+							nacks = g_slist_prepend(nacks, GUINT_TO_POINTER(cur_seq->seq));
 							cur_seq->state = SEQ_NACKED;
 							if(video && janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_RFC4588_RTX)) {
 								/* Keep track of this sequence number, we need to avoid duplicates */
@@ -2362,7 +2357,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 								/* We don't track it forever, though: add a timed source to remove it in a few seconds */
 								janus_ice_nacked_packet *np = g_malloc(sizeof(janus_ice_nacked_packet));
 								np->handle = handle;
-								np->seq_number = new_seqn;
+								np->seq_number = cur_seq->seq;
 								np->vindex = vindex;
 								GSource *timeout_source = g_timeout_source_new_seconds(5);
 								g_source_set_callback(timeout_source, janus_ice_nacked_packet_cleanup, np, (GDestroyNotify)g_free);
@@ -2372,7 +2367,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 						} else if(cur_seq->state == SEQ_NACKED  && now - cur_seq->ts > SEQ_NACKED_WAIT) {
 							JANUS_LOG(LOG_HUGE, "[%"SCNu64"] Missed sequence number %"SCNu16" (%s stream #%d), sending 2nd NACK\n",
 								handle->handle_id, cur_seq->seq, video ? "video" : "audio", vindex);
-							nacks = g_slist_append(nacks, GUINT_TO_POINTER(cur_seq->seq));
+							nacks = g_slist_prepend(nacks, GUINT_TO_POINTER(cur_seq->seq));
 							cur_seq->state = SEQ_GIVEUP;
 						}
 						if(cur_seq == *last_seqs) {
@@ -2507,7 +2502,8 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 				if(nacks_count && ((!video && component->do_audio_nacks) || (video && component->do_video_nacks))) {
 					/* Handle NACK */
 					JANUS_LOG(LOG_HUGE, "[%"SCNu64"]     Just got some NACKS (%d) we should handle...\n", handle->handle_id, nacks_count);
-					GSList *list = nacks;
+					GHashTable *retransmit_seqs = (video ? component->video_retransmit_seqs : component->audio_retransmit_seqs);
+					GSList *list = (retransmit_seqs != NULL ? nacks : NULL);
 					int retransmits_cnt = 0;
 					janus_mutex_lock(&component->mutex);
 					while(list) {
@@ -2515,8 +2511,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 						JANUS_LOG(LOG_DBG, "[%"SCNu64"]   >> %u\n", handle->handle_id, seqnr);
 						int in_rb = 0;
 						/* Check if we have the packet */
-						janus_rtp_packet *p = g_hash_table_lookup(video ?
-							component->video_retransmit_seqs : component->audio_retransmit_seqs, GUINT_TO_POINTER(seqnr));
+						janus_rtp_packet *p = g_hash_table_lookup(retransmit_seqs, GUINT_TO_POINTER(seqnr));
 						if(p == NULL) {
 							JANUS_LOG(LOG_HUGE, "[%"SCNu64"]   >> >> Can't retransmit packet %u, we don't have it...\n", handle->handle_id, seqnr);
 						} else {
@@ -2587,7 +2582,7 @@ static void janus_ice_cb_nice_recv(NiceAgent *agent, guint stream_id, guint comp
 				}
 
 				janus_plugin *plugin = (janus_plugin *)handle->app;
-				if(plugin && plugin->incoming_rtcp &&
+				if(plugin && plugin->incoming_rtcp && handle->app_handle &&
 						!g_atomic_int_get(&handle->app_handle->stopped) &&
 						!g_atomic_int_get(&handle->destroyed))
 					plugin->incoming_rtcp(handle->app_handle, video, buf, buflen);
@@ -2610,7 +2605,7 @@ void janus_ice_incoming_data(janus_ice_handle *handle, char *buffer, int length)
 	if(handle == NULL || buffer == NULL || length <= 0)
 		return;
 	janus_plugin *plugin = (janus_plugin *)handle->app;
-	if(plugin && plugin->incoming_data &&
+	if(plugin && plugin->incoming_data && handle->app_handle &&
 			!g_atomic_int_get(&handle->app_handle->stopped) &&
 			!g_atomic_int_get(&handle->destroyed))
 		plugin->incoming_data(handle->app_handle, buffer, length);
@@ -3372,25 +3367,28 @@ static gboolean janus_ice_outgoing_rtcp_handle(gpointer user_data) {
 		size_t size = 1300;
 		char rtcpbuf[1300];
 		/* Order packet list */
-		GSList *sorted = g_slist_sort(handle->stream->transport_wide_received_seq_nums, rtcp_transport_wide_cc_stats_comparator);
+		stream->transport_wide_received_seq_nums = g_slist_sort(stream->transport_wide_received_seq_nums,
+			rtcp_transport_wide_cc_stats_comparator);
 		/* Create full stats queue */
 		GQueue *packets = g_queue_new();
 		/* For all packets */
 		GSList *it = NULL;
-		for (it = sorted; it; it = it->next) {
+		for(it = stream->transport_wide_received_seq_nums; it; it = it->next) {
 			/* Get stat */
 			janus_rtcp_transport_wide_cc_stats *stats = (janus_rtcp_transport_wide_cc_stats *)it->data;
 			/* Get transport seq */
 			guint32 transport_seq_num = stats->transport_seq_num;
 			/* Check if it is an out of order  */
-			if (transport_seq_num < handle->stream->transport_wide_cc_last_feedback_seq_num)
+			if(transport_seq_num < stream->transport_wide_cc_last_feedback_seq_num) {
 				/* Skip, it was already reported as lost */
+				g_free(stats);
 				continue;
+			}
 			/* If not first */
-			if (handle->stream->transport_wide_cc_last_feedback_seq_num) {
+			if(stream->transport_wide_cc_last_feedback_seq_num) {
 				/* For each lost */
 				guint32 i = 0;
-				for (i = handle->stream->transport_wide_cc_last_feedback_seq_num+1; i<transport_seq_num; ++i) {
+				for(i = stream->transport_wide_cc_last_feedback_seq_num+1; i<transport_seq_num; ++i) {
 					/* Create new stat */
 					janus_rtcp_transport_wide_cc_stats *missing = g_malloc(sizeof(janus_rtcp_transport_wide_cc_stats));
 					/* Add missing packet */
@@ -3401,20 +3399,45 @@ static gboolean janus_ice_outgoing_rtcp_handle(gpointer user_data) {
 				}
 			}
 			/* Store last */
-			handle->stream->transport_wide_cc_last_feedback_seq_num = transport_seq_num;
+			stream->transport_wide_cc_last_feedback_seq_num = transport_seq_num;
 			/* Add this one */
 			g_queue_push_tail(packets, stats);
 		}
-		/* Clear stats */
-		g_slist_free(handle->stream->transport_wide_received_seq_nums);
-		/* Reset list */
-		handle->stream->transport_wide_received_seq_nums = NULL;
-		/* Get feedback pacakte count and increase it for next one */
-		guint8 feedback_packet_count = handle->stream->transport_wide_cc_feedback_count++;
-		/* Create rtcp packet */
-		int len = janus_rtcp_transport_wide_cc_feedback(rtcpbuf, size, handle->stream->video_ssrc, stream->video_ssrc_peer[0] , feedback_packet_count, packets);
-		/* Enqueue it, we'll send it later */
-		janus_ice_relay_rtcp_internal(handle, 1, rtcpbuf, len, FALSE);
+		/* Free and reset stats list */
+		g_slist_free(stream->transport_wide_received_seq_nums);
+		stream->transport_wide_received_seq_nums = NULL;
+		/* Create and enqueue RTCP packets */
+		guint packets_len = 0;
+		while ((packets_len = g_queue_get_length(packets)) > 0) {
+			GQueue *packets_to_process;
+			/* If we have more than 400 packets to acknowledge, let's send more than one message */
+			if (packets_len > 400) {
+				/* Split the queue into two */
+				GList *new_head = g_queue_peek_nth_link(packets, 400);
+				GList *new_tail = new_head->prev;
+				new_head->prev = NULL;
+				new_tail->next = NULL;
+				packets_to_process = g_queue_new();
+				packets_to_process->head = packets->head;
+				packets_to_process->tail = new_tail;
+				packets_to_process->length = 400;
+				packets->head = new_head;
+				/* packets->tail is unchanged */
+				packets->length = packets_len - 400;
+			} else {
+				packets_to_process = packets;
+			}
+			/* Get feedback packet count and increase it for next one */
+			guint8 feedback_packet_count = stream->transport_wide_cc_feedback_count++;
+			/* Create RTCP packet */
+			int len = janus_rtcp_transport_wide_cc_feedback(rtcpbuf, size,
+				stream->video_ssrc, stream->video_ssrc_peer[0], feedback_packet_count, packets_to_process);
+			/* Enqueue it, we'll send it later */
+			janus_ice_relay_rtcp_internal(handle, 1, rtcpbuf, len, FALSE);
+			if (packets_to_process != packets) {
+				g_queue_free(packets_to_process);
+			}
+		}
 		/* Free mem */
 		g_queue_free(packets);
 	}
