@@ -3795,7 +3795,7 @@ static void janus_streaming_hangup_media_internal(janus_plugin_session *handle) 
 	if(!g_atomic_int_compare_and_exchange(&session->hangingup, 0, 1))
 		return;
 	session->substream = -1;
-	session->substream_target = 2;
+	session->substream_target = 0;
 	session->templayer = -1;
 	session->templayer_target = 2;
 	session->last_relayed = 0;
@@ -4016,7 +4016,7 @@ static void *janus_streaming_handler(void *data) {
 					}
 					/* In case this mountpoint is simulcasting, let's aim high by default */
 					session->substream = -1;
-					session->substream_target = 2;
+					session->substream_target = 0;
 					session->templayer = -1;
 					session->templayer_target = 2;
 					janus_vp8_simulcast_context_reset(&session->simulcast_context);
