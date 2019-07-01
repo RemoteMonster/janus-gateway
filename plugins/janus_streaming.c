@@ -6827,7 +6827,7 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 					int step = (session->substream < 1 && session->substream_target == 2);
 					JANUS_LOG(LOG_VERB, "Step : %d\n", (session->substream < 1 && session->substream_target == 2));
 					if(packet->substream == session->substream_target || (step && packet->substream == step)) {
-						if(janus_vp8_is_keyframe(payload, plen)) {
+						if(janus_vp8_is_keyframe(payload, plen) || janus_h264_is_keyframe(payload, plen)) {
 							JANUS_LOG(LOG_VERB, "Received keyframe on substream %d, switching (was %d)\n",
 								packet->substream, session->substream);
 							session->substream = packet->substream;
