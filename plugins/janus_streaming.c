@@ -6687,10 +6687,6 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 						}
 					}
 				}
-				JANUS_LOG(LOG_HUGE, "Packet->subStream %d comming.", packet->substream);
-				JANUS_LOG(LOG_HUGE, "Packet->subStream %d, session->substream %d, not equal", packet->substream, session->substream);
-				JANUS_LOG(LOG_HUGE, "Packet->isSimulcast %d, packet->codec %d, not equal", packet->simulcast, packet->codec);
-
 				if(packet->substream != session->substream) {
 					JANUS_LOG(LOG_HUGE, "Dropping packet (it's from substream %d, but we're only relaying substream %d now\n",
 						packet->substream, session->substream);
