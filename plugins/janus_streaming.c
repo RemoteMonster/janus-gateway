@@ -6820,9 +6820,12 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 				if(payload == NULL)
 					return;
 				gboolean switched = FALSE;
+				JANUS_LOG(LOG_VERB, "Session.substream : %d session.substream_target : %d\n",
+								session->substream, session->substream_target);
 				if(session->substream != session->substream_target) {
 					/* There has been a change: let's wait for a keyframe on the target */
 					int step = (session->substream < 1 && session->substream_target == 2);
+					JANUS_LOG(LOG_VERB, "Step : %d\n", (session->substream < 1 && session->substream_target == 2));
 					if(packet->substream == session->substream_target || (step && packet->substream == step)) {
 						if(janus_vp8_is_keyframe(payload, plen)) {
 							JANUS_LOG(LOG_VERB, "Received keyframe on substream %d, switching (was %d)\n",
@@ -6837,8 +6840,8 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 							json_object_set_new(event, "result", result);
 							gateway->push_event(session->handle, &janus_streaming_plugin, NULL, event, NULL);
 							json_decref(event);
-						//~ } else {
-							//~ JANUS_LOG(LOG_WARN, "Not a keyframe on SSRC %"SCNu32" yet, waiting before switching\n", ssrc);
+						// } else {
+							// JANUS_LOG(LOG_WARN, "Not a keyframe on SSRC %"SCNu32" yet, waiting before switching\n", ssrc);
 						}
 					}
 				}
@@ -6851,9 +6854,12 @@ static void janus_streaming_relay_rtp_packet(gpointer data, gpointer user_data) 
 					gint64 now = janus_get_monotonic_time();
 					if(now-session->last_relayed >= 250000) {
 						session->last_relayed = now;
+						JANUS_LOG(LOG_VERB, "Session.substream : %d\n", session->substream);
 						int substream = session->substream-1;
-						if(substream < 0)
+						JANUS_LOG(LOG_VERB, "new substream  : %d\n", substream);
+						if(substream < 0){
 							substream = 0;
+						}
 						if(session->substream != substream) {
 							JANUS_LOG(LOG_WARN, "No packet received on substream %d for a while, falling back to %d\n",
 								session->substream, substream);

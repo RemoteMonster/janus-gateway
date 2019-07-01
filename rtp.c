@@ -959,9 +959,21 @@ gboolean janus_rtp_simulcasting_context_process_rtp(janus_rtp_simulcasting_conte
 	char *payload = janus_rtp_payload(buf, len, &plen);
 	if(payload == NULL)
 		return FALSE;
+	JANUS_LOG(LOG_VERB, "Rtp.context.substream : %d | Rtp.context.substream_target : %d \n", context->substream, context->substream_target);
 	if(context->substream != context->substream_target) {
 		/* There has been a change: let's wait for a keyframe on the target */
 		int step = (context->substream < 1 && context->substream_target == 2);
+		JANUS_LOG(LOG_VERB, "Rtp.step %d \n", step);
+		JANUS_LOG(LOG_VERB, "Rtp.ssrc %d \n", ssrc);
+		JANUS_LOG(LOG_VERB, "Rtp. *(ssrcs + context->substream_target) %d \n", *(ssrcs + context->substream_target));
+		JANUS_LOG(LOG_VERB, "Rtp. *(ssrcs + step) %d \n", *(ssrcs + step));
+		JANUS_LOG(LOG_VERB, "Rtp. (step && ssrc == *(ssrcs + step)) %d \n", (step && ssrc == *(ssrcs + step)));
+		JANUS_LOG(LOG_VERB, "Rtp.vcodec %d \n", vcodec);
+		JANUS_LOG(LOG_VERB, "Rtp.janus_h264_is_keyframe(payload, plen) %d \n", janus_h264_is_keyframe(payload, plen));
+		JANUS_LOG(LOG_VERB, "Rtp. change substream - ifelse %d ", ((vcodec == JANUS_VIDEOCODEC_VP8 && janus_vp8_is_keyframe(payload, plen)) ||
+					(vcodec == JANUS_VIDEOCODEC_H264 && janus_h264_is_keyframe(payload, plen))))
+		JANUS_LOG(LOG_VERB, "Rtp.(ssrc == *(ssrcs + context->substream_target) %d \n", (ssrc == *(ssrcs + context->substream_target));
+		
 		if((ssrc == *(ssrcs + context->substream_target)) || (step && ssrc == *(ssrcs + step))) {
 			if((vcodec == JANUS_VIDEOCODEC_VP8 && janus_vp8_is_keyframe(payload, plen)) ||
 					(vcodec == JANUS_VIDEOCODEC_H264 && janus_h264_is_keyframe(payload, plen))) {
@@ -972,8 +984,8 @@ gboolean janus_rtp_simulcasting_context_process_rtp(janus_rtp_simulcasting_conte
 				context->substream = (ssrc == *(ssrcs + context->substream_target) ? context->substream_target : step);
 				/* Notify the caller that the substream changed */
 				context->changed_substream = TRUE;
-			//~ } else {
-				//~ JANUS_LOG(LOG_WARN, "Not a keyframe on SSRC %"SCNu32" yet, waiting before switching\n", ssrc);
+			} else {
+				JANUS_LOG(LOG_WARN, "Not a keyframe on SSRC %"SCNu32" yet, waiting before switching\n", ssrc);
 			}
 		}
 	}
