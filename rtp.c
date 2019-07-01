@@ -972,7 +972,7 @@ gboolean janus_rtp_simulcasting_context_process_rtp(janus_rtp_simulcasting_conte
 		JANUS_LOG(LOG_VERB, "Rtp.janus_h264_is_keyframe(payload, plen) %d \n", janus_h264_is_keyframe(payload, plen));
 		JANUS_LOG(LOG_VERB, "Rtp. change substream - ifelse %d ", ((vcodec == JANUS_VIDEOCODEC_VP8 && janus_vp8_is_keyframe(payload, plen)) ||
 					(vcodec == JANUS_VIDEOCODEC_H264 && janus_h264_is_keyframe(payload, plen))))
-		JANUS_LOG(LOG_VERB, "Rtp.(ssrc == *(ssrcs + context->substream_target) %d \n", (ssrc == *(ssrcs + context->substream_target));
+		JANUS_LOG(LOG_VERB, "Rtp.(ssrc == *(ssrcs + context->substream_target) %d \n", (ssrc == *(ssrcs + context->substream_target)));
 		
 		if((ssrc == *(ssrcs + context->substream_target)) || (step && ssrc == *(ssrcs + step))) {
 			if((vcodec == JANUS_VIDEOCODEC_VP8 && janus_vp8_is_keyframe(payload, plen)) ||
